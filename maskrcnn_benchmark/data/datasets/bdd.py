@@ -15,6 +15,7 @@ def group_by_key(detections, key):
 class BDDDataset(data.Dataset):
 
     CLASSES = (
+        "__background__",
         "traffic light",
         "traffic sign",
         "car",
