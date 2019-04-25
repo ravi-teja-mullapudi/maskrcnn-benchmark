@@ -119,7 +119,23 @@ class DatasetCatalog(object):
         "bdd_train_20" : {
             "img_dir": "bdd/train",
             "ann_file": "bdd/annotations/bdd_train_20.json"
-        }
+        },
+        "bdd_train_10k_per_class" : {
+            "img_dir": "bdd/train",
+            "ann_file": "bdd/annotations/bdd_train_10k_per_class.json"
+        },
+        "bdd_train_5k_per_class" : {
+            "img_dir": "bdd/train",
+            "ann_file": "bdd/annotations/bdd_train_5k_per_class.json"
+        },
+        "bdd_train_1k_per_class" : {
+            "img_dir": "bdd/train",
+            "ann_file": "bdd/annotations/bdd_train_1k_per_class.json"
+        },
+        "bdd_train_100_per_class" : {
+            "img_dir": "bdd/train",
+            "ann_file": "bdd/annotations/bdd_train_100_per_class.json"
+        },
     }
 
     @staticmethod

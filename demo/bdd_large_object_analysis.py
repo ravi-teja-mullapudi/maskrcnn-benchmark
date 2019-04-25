@@ -10,7 +10,7 @@ from bdd_analysis import group_by_key, cat_pc
 from bdd_visualize import draw_boxes
 
 def get_unmatched_objects(label_file, pred_all, unmatched_objects = {},
-                          gt_large_objects={}, small_object_thresh = 32 * 32,
+                          gt_large_objects={}, small_object_thresh = 64 * 64,
                           iou_thresh = 0.5):
     gt_list = []
     with open(l) as data_file:
@@ -63,10 +63,12 @@ if __name__ == "__main__":
     image_dir = '/n/pana/scratch/ravi/bdd/bdd100k/images/100k/val/'
     bdd_labels_path = '/n/pana/scratch/ravi/bdd/bdd100k/labels/100k/val'
     bdd_labels_list = glob.glob(os.path.join(bdd_labels_path, '*.json'))
-    output_dir = '/n/pana/scratch/ravi/bdd_missed_large_objects'
+    output_dir = '/n/pana/scratch/ravi/bdd_missed_large_objects_relabeled/'
 
-    with open('supervised.json') as pred_file:
+    with open('omni.json') as pred_file:
         pred_all = json.load(pred_file)
+    #pred_all = np.load('bdd_val_pretrained_reassigned_common_nn_categories.npy')[()].tolist()
+    #pred_all = np.load('bdd_val_gt_reassigned_common_nn_categories.npy')[()].tolist()
 
     unmatched_objects = {}
     gt_large_objects = {}
@@ -75,8 +77,8 @@ if __name__ == "__main__":
         get_unmatched_objects(l, pred_all, unmatched_objects, gt_large_objects)
         image_id = l.split('/')[-1].split('.')[0]
         image_path = os.path.join(image_dir, image_id + '.jpg')
-        img = cv2.imread(image_path)
-        unmatched = draw_boxes(img, unmatched_objects[image_id])
+        #img = cv2.imread(image_path)
+        #unmatched = draw_boxes(img, unmatched_objects[image_id])
 
         pred_list = []
         for p in pred_all:
@@ -85,7 +87,7 @@ if __name__ == "__main__":
 
         #predicted = draw_boxes(img, pred_list)
         #vis_img = np.concatenate((unmatched, predicted), axis=1)
-        #if len(unmatched) > 0:
+        #if len(unmatched_objects[image_id]) > 0:
         #    cv2.imwrite(os.path.join(output_dir, image_id + '.png'), vis_img)
 
     all_unmatched = sum(unmatched_objects.values(), [])
