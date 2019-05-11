@@ -71,7 +71,7 @@ def get_patch_score(query_embedding, images, num_cutoff=50):
 
         return image_similar_embeddings
 
-def visualize_similarity(query, image_similar_embeddings, output_dir):
+def visualize_similarity(query, image_similar_embeddings, output_dir, max_images=100):
 
     image_similarity = {}
     query = query / (np.linalg.norm(query, ord=2) + np.finfo(float).eps)
@@ -94,6 +94,31 @@ def visualize_similarity(query, image_similar_embeddings, output_dir):
             output_file_path = os.path.join(output_dir, 'similarity_vis_%03d'%(count) + '.png')
             cv2.imwrite(output_file_path, similarity_vis)
         count = count + 1
+        if count > max_images:
+            break
+
+def get_recall(query, image_similar_embeddings, instances,
+               cls, max_queries=100, step=50):
+    image_similarity = {}
+    query = query / (np.linalg.norm(query, ord=2) + np.finfo(float).eps)
+    for im in image_similar_embeddings.keys():
+        embeddings = image_similar_embeddings[im]['embeddings']
+        similarity = np.tensordot(embeddings, query, axes=1)
+        image_similarity[im] = np.sum(similarity)
+
+    sorted_images = sorted(image_similarity.items(), key=lambda x: -x[1])
+
+    recalls = [ 0 for _ in range(0, max_queries, step) ]
+    count = 0
+    for im, dist in sorted_images[:max_queries]:
+        image_id = im.split('/')[-1].split('.')[0]
+        if image_id in large_val_instances_image:
+            instances = large_val_instances_image[image_id]
+            instances_cat = group_by_key(instances, 'category')
+            if cls in instances_cat:
+                recalls[int(count/step)] = recalls[int(count/step)] + 1
+        count = count + 1
+    return recalls
 
 def get_positive_negative_embeddings(query,
                                      image_similar_embeddings,
@@ -180,8 +205,8 @@ if __name__ ==  "__main__":
                                            instances_per_class=100000,
                                            min_size=64)
 
-    output_dir = './similarity_vis_max'
     image_dir = '/n/pana/scratch/ravi/bdd/bdd100k/images/100k/val/'
+    output_dir = './similarity_vis_refined_iter0'
 
     large_val_instances_cat = group_by_key(large_val_instances, 'category')
     large_val_instances_image = group_by_key(large_val_instances, 'name')
@@ -205,22 +230,55 @@ if __name__ ==  "__main__":
     cv2.imwrite(os.path.join(output_dir, 'query.png'), query_patch)
 
     # Compute embedding locations which are similar to query in each image
-    image_list = glob.glob(os.path.join(image_dir, '*.jpg'))[0:1000]
+    image_list = glob.glob(os.path.join(image_dir, '*.jpg'))[0:5000]
+
+    max_queries = 1000
+    step = 25
+    cls = 'traffic sign'
+
+    total_positives = 0
+    for im in image_list:
+        image_id = im.split('/')[-1].split('.')[0]
+        if image_id in large_val_instances_image:
+            instances = large_val_instances_image[image_id]
+            instances_cat = group_by_key(instances, 'category')
+            if cls in instances_cat:
+                total_positives = total_positives + 1
+    print('total_positives', total_positives)
+
+    recalls = [ 0 for _ in range(0, max_queries, step) ]
+    count = 0
+    for im in image_list[:max_queries]:
+        image_id = im.split('/')[-1].split('.')[0]
+        if image_id in large_val_instances_image:
+            instances = large_val_instances_image[image_id]
+            instances_cat = group_by_key(instances, 'category')
+            if cls in instances_cat:
+                recalls[int(count/step)] = recalls[int(count/step)] + 1
+        count = count + 1
+    print('random', np.cumsum(recalls))
+
     query = query_instance['pool5_resnet_v2_101']
     image_similar_embeddings = get_patch_score(query, image_list)
 
-    visualize_similarity(query, image_similar_embeddings, output_dir)
+    visualize_similarity(query, image_similar_embeddings, output_dir, max_images=1000)
+
+    recalls = get_recall(query, image_similar_embeddings, large_val_instances_image,
+                         cls, max_queries=max_queries, step=step)
+    print('iter 0', np.cumsum(recalls))
 
     pos_embeddings, neg_embeddings = get_positive_negative_embeddings(query,
                                                         image_similar_embeddings,
                                                         large_val_instances_image,
-                                                        25, 'traffic sign')
-    print(len(pos_embeddings), len(neg_embeddings))
+                                                        25, cls)
 
     refined_query = sum(pos_embeddings)/len(pos_embeddings) - sum(neg_embeddings)/len(neg_embeddings)
     image_similar_embeddings = get_patch_score(refined_query, image_list)
-    output_dir = './similarity_vis_refined'
-    visualize_similarity(refined_query, image_similar_embeddings, output_dir)
+    output_dir = './similarity_vis_refined_iter1'
+    visualize_similarity(refined_query, image_similar_embeddings, output_dir, max_images=1000)
+    recalls = get_recall(query, image_similar_embeddings, large_val_instances_image,
+                         cls, max_queries=max_queries, step=step)
+    print('iter 1', np.cumsum(recalls))
 
     exit(0)
 
