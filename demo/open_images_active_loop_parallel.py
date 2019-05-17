@@ -27,15 +27,21 @@ from preprocessing import inception_preprocessing
 from bdd_active_loop import visualize_similarity
 
 def get_query_similarity(gpu_id, query_embeddings, image_id_queue,
-                         embeddings_queue, num_cutoff=50):
+                         model_name, embeddings_queue, num_cutoff=50):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     norm_query_embeddings = {}
-    for cls_id in query_embeddings.keys():
+
+    query_embedding_size = query_embeddings.values()[0].shape[0]
+    num_queries = len(query_embeddings.keys())
+    query_mat = np.zeros((num_queries, query_embedding_size), dtype=np.float32)
+    for count, cls_id in enumerate(query_embeddings.keys()):
         norm_embedding = query_embeddings[cls_id] / (np.linalg.norm(query_embeddings[cls_id], ord=2) + np.finfo(float).eps)
-        norm_query_embeddings[cls_id] = norm_embedding
+        norm_query_embeddings[cls_id] = count
+        query_mat[count] = norm_embedding
 
     with tf.Graph().as_default():
         image = tf.placeholder(tf.uint8, (None, None, 3))
+        query_in = tf.placeholder(tf.float32, (num_queries, query_embedding_size))
         if image.dtype != tf.float32:
             processed_image = tf.image.convert_image_dtype(image, dtype=tf.float32)
         else:
@@ -46,12 +52,31 @@ def get_query_similarity(gpu_id, query_embeddings, image_id_queue,
 
         processed_image = tf.expand_dims(processed_image, 0)
         with slim.arg_scope(resnet_v2.resnet_arg_scope()):
-            postnorm, _ = resnet_v2.resnet_v2_101(processed_image, None,
-                                                  is_training=False,
-                                                  global_pool=False,
-                                                  output_stride=8)
-        init_fn = slim.assign_from_checkpoint_fn('resnet_v2_101.ckpt',
-                                slim.get_model_variables('resnet_v2'))
+            if model_name == 'resnet_v2_101':
+                postnorm, _ = resnet_v2.resnet_v2_101(processed_image, None,
+                                                      is_training=False,
+                                                      global_pool=False,
+                                                      output_stride=8)
+            elif model_name == 'resnet_v2_50':
+                postnorm, _ = resnet_v2.resnet_v2_50(processed_image, None,
+                                                      is_training=False,
+                                                      global_pool=False,
+                                                      output_stride=8)
+            else:
+                print('Unknown model')
+                exit(0)
+            postnorm = tf.nn.l2_normalize(postnorm, axis=3)
+            query_similarity = tf.tensordot(query_in, postnorm, axes=[[1], [3]])
+            query_sorted_idxs = tf.argsort(tf.reshape(query_similarity, [num_queries, -1]),
+                                           direction='DESCENDING')
+            query_sorted_idxs = query_sorted_idxs[:, :num_cutoff]
+
+        if model_name == 'resnet_v2_101':
+            init_fn = slim.assign_from_checkpoint_fn('resnet_v2_101.ckpt',
+                                    slim.get_model_variables('resnet_v2'))
+        elif model_name == 'resnet_v2_50':
+            init_fn = slim.assign_from_checkpoint_fn('resnet_v2_50.ckpt',
+                                    slim.get_model_variables('resnet_v2'))
 
         with tf.Session() as sess:
             init_fn(sess)
@@ -64,32 +89,28 @@ def get_query_similarity(gpu_id, query_embeddings, image_id_queue,
                 max_image_size = 1920 * 1080
                 if height * width > max_image_size:
                     scale_factor = math.sqrt((height * width)/max_image_size)
-                    img = cv2.resize(img, (int(width * scale_factor), int(height * scale_factor)))
+                    img = cv2.resize(img, (int(width/scale_factor), int(height/scale_factor)))
 
-                input_img, embedding = sess.run([processed_image, postnorm], feed_dict={image: img})
-                embedding = embedding / (np.expand_dims(np.linalg.norm(embedding, axis=3, ord=2), axis=3) + np.finfo(float).eps)
+                input_img, embedding, similarity, sorted_idxs = \
+                        sess.run([processed_image, postnorm, query_similarity, query_sorted_idxs],
+                                  feed_dict={image: img, query_in: query_mat})
 
                 query_similar_embeddings = {}
 
                 for cls_id in norm_query_embeddings.keys():
-                    query_embedding = norm_query_embeddings[cls_id]
-                    similarity = np.tensordot(embedding, query_embedding, axes=1)
-                    similarity_peaks = np.unravel_index(np.argsort(-similarity, axis=None),
-                                                    similarity.shape)
-
-                    similarity_sorted = similarity[similarity_peaks]
-                    similarity_coords = [ np.expand_dims(c, axis=0) for c in \
-                                      similarity_peaks ]
-                    similarity_coords = np.transpose(np.concatenate(similarity_coords,
-                                                                axis=0))
+                    cls_pos = norm_query_embeddings[cls_id]
+                    query_embedding = query_mat[cls_pos]
+                    similarity_peaks = np.unravel_index(sorted_idxs[cls_pos],
+                                                        similarity[cls_pos].shape)
 
                     query_similar_embeddings[cls_id] = \
-                            { 'locs': similarity_coords[:num_cutoff],
-                            'embeddings': embedding[similarity_peaks][:num_cutoff].copy(),
-                            'similarity': similarity }
+                            { 'embeddings': embedding[similarity_peaks].copy(),
+                              'similarity': similarity[cls_pos].copy() }
+
+
                 embeddings_queue.put((im, query_similar_embeddings))
 
-def get_similarity(query_embeddings, sample_paths):
+def get_similarity(query_embeddings, sample_paths, model_name):
 
     image_id_queue = mp.Queue()
     embeddings_queue = mp.Queue()
@@ -100,7 +121,8 @@ def get_similarity(query_embeddings, sample_paths):
     for gpu_id in range(num_gpus):
         proc = mp.Process(target=get_query_similarity,
                           args=(gpu_id, query_embeddings,
-                                image_id_queue, embeddings_queue))
+                                image_id_queue, model_name,
+                                embeddings_queue))
         proc.start()
         processes.append(proc)
 
@@ -113,18 +135,18 @@ def get_similarity(query_embeddings, sample_paths):
 
     for _ in tqdm(sample_paths):
         im, similar_embeddings = embeddings_queue.get()
-        for cls in similar_embeddings.keys():
-            cls_similar_embeddings[cls_id][im] = similar_embeddings[cls]
+        for cls_id in similar_embeddings.keys():
+            cls_similar_embeddings[cls_id][im] = similar_embeddings[cls_id]
 
     # Tell processes to exit
     for gpu_id in range(num_gpus):
-        image_id_queue.put((-1, None))
+        image_id_queue.put(None)
     for i in range(num_gpus):
         processes[i].join()
 
     return cls_similar_embeddings
 
-def get_embeddings(instances, return_dict):
+def get_embeddings(instances, model_name, return_dict):
     image_size = 299
     query_embeddings = {}
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -133,10 +155,20 @@ def get_embeddings(instances, return_dict):
         processed_image = inception_preprocessing.preprocess_image(image, image_size, image_size, is_training=False)
         processed_image = tf.expand_dims(processed_image, 0)
         with slim.arg_scope(resnet_v2.resnet_arg_scope()):
-            logits, _ = resnet_v2.resnet_v2_101(processed_image, 1001, is_training=False)
-            pool5 = tf.get_default_graph().get_tensor_by_name("resnet_v2_101/pool5:0")
-
-        init_fn = slim.assign_from_checkpoint_fn('resnet_v2_101.ckpt',
+            if model_name == 'resnet_v2_101':
+                logits, _ = resnet_v2.resnet_v2_101(processed_image, 1001, is_training=False)
+                pool5 = tf.get_default_graph().get_tensor_by_name("resnet_v2_101/pool5:0")
+            elif model_name == 'resnet_v2_50':
+                logits, _ = resnet_v2.resnet_v2_50(processed_image, 1001, is_training=False)
+                pool5 = tf.get_default_graph().get_tensor_by_name("resnet_v2_50/pool5:0")
+            else:
+                print("Unknown model")
+                exit(0)
+        if model_name == 'resnet_v2_101':
+            init_fn = slim.assign_from_checkpoint_fn('resnet_v2_101.ckpt',
+                                slim.get_model_variables('resnet_v2'))
+        elif model_name == 'resnet_v2_50':
+            init_fn = slim.assign_from_checkpoint_fn('resnet_v2_50.ckpt',
                                 slim.get_model_variables('resnet_v2'))
 
         with tf.Session() as sess:
@@ -206,15 +238,18 @@ if __name__ == "__main__":
                 query_instances[cls_id] = (ins, patch)
                 break
 
+    model_name = 'resnet_v2_50'
     manager = mp.Manager()
     return_dict = manager.dict()
     proc = mp.Process(target=get_embeddings,
-                          args=(query_instances, return_dict))
+                          args=(query_instances, model_name,
+                                return_dict))
     proc.start()
     proc.join()
 
     query_embeddings = return_dict['query_embeddings']
-    query_similar_embeddings = get_similarity(query_embeddings, sample_paths)
+    query_similar_embeddings = get_similarity(query_embeddings, sample_paths,
+                                              model_name)
 
     output_dir = './open_images_similarity_vis_iter0'
     for cls_id, name in classes_of_interest:
