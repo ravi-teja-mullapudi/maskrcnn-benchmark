@@ -83,7 +83,7 @@ def visualize_similarity(query, image_similar_embeddings, output_dir, max_images
     sorted_images = sorted(image_similarity.items(), key=lambda x: -x[1])
 
     count = 0
-    for im, dist in tqdm(sorted_images):
+    for im, dist in tqdm(sorted_images[:min(max_images, len(sorted_images))]):
         img = cv2.imread(im)
         similarity = image_similar_embeddings[im]['similarity']
         similarity = (similarity - np.min(similarity))/(np.max(similarity) - np.min(similarity) + np.finfo(float).eps)
