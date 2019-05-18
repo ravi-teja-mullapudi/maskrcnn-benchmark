@@ -13,6 +13,7 @@ import time
 import cv2
 import random
 import gc
+import math
 
 from tqdm import tqdm
 from collections import defaultdict
@@ -57,13 +58,21 @@ def get_query_similarity(query_embeddings, images, num_cutoff=50):
             init_fn(sess)
             for im in tqdm(images):
                 img = cv2.imread(im)
+                height, width = img.shape[:2]
+                max_image_size = 1920 * 1080
+                if height * width > max_image_size:
+                    scale_factor = math.sqrt((height * width)/max_image_size)
+                    img = cv2.resize(img, (int(width/scale_factor), int(height/scale_factor)))
+
                 input_img, embedding = sess.run([processed_image, postnorm], feed_dict={image: img})
                 embedding = embedding / (np.expand_dims(np.linalg.norm(embedding, axis=3, ord=2), axis=3) + np.finfo(float).eps)
+
                 for cls_id in norm_query_embeddings.keys():
                     query_embedding = norm_query_embeddings[cls_id]
                     similarity = np.tensordot(embedding, query_embedding, axes=1)
                     similarity_peaks = np.unravel_index(np.argsort(-similarity, axis=None),
                                                     similarity.shape)
+
 
                     similarity_sorted = similarity[similarity_peaks]
                     similarity_coords = [ np.expand_dims(c, axis=0) for c in \
@@ -162,7 +171,7 @@ if __name__ == "__main__":
                 break
 
     query_embeddings = get_embeddings(query_instances)
-    query_similar_embeddings = get_query_similarity(query_embeddings, sample_paths[:500])
+    query_similar_embeddings = get_query_similarity(query_embeddings, sample_paths[6000:])
 
     output_dir = './open_images_similarity_vis_iter0'
     for cls_id, name in classes_of_interest:
