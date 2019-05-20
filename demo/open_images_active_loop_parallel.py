@@ -24,7 +24,126 @@ sys.path.append(os.path.realpath('/n/pana/scratch/ravi/models/research/slim/'))
 
 from nets import resnet_v2
 from preprocessing import inception_preprocessing
-from bdd_active_loop import visualize_similarity
+
+def group_by_key(detections, key):
+    groups = defaultdict(list)
+    for d in detections:
+        groups[d[key]].append(d)
+    return groups
+
+def rank_by_query(query, image_similar_embeddings):
+    image_similarity = {}
+    query = query / (np.linalg.norm(query, ord=2) + np.finfo(float).eps)
+    for im in image_similar_embeddings.keys():
+        embeddings = image_similar_embeddings[im]['embeddings']
+        similarity = np.tensordot(embeddings, query, axes=1)
+        image_similarity[im] = np.sum(similarity)
+
+    sorted_images = sorted(image_similarity.items(), key=lambda x: -x[1])
+    return sorted_images
+
+def get_postives_and_negatives(sorted_images, gt_instances, cls,
+                               num_samples, window_size):
+
+    get_spaced_idxs = lambda m, n: [i*n//m + n//(2*m) for i in range(m)]
+    spaced_idxs = get_spaced_idxs(num_samples, window_size)
+    user_positive_samples = []
+    user_negative_samples = []
+
+    positive_idxs = []
+    negative_idxs = []
+
+    for idx in spaced_idxs:
+        image_id, dist = sorted_images[idx]
+        if image_id in gt_instances:
+            instances = gt_instances[image_id]
+            instances_cat = group_by_key(instances, 'category')
+            if cls in instances_cat:
+                user_positive_samples.append(image_id)
+                positive_idxs.append(idx)
+            else:
+                user_negative_samples.append(image_id)
+                negative_idxs.append(idx)
+
+    prev_idx_positive = True
+    max_streak_positive = -1
+    for idx in spaced_idxs:
+        if idx in positive_idxs and prev_idx_positive:
+            max_streak_positive = idx
+        else:
+            prev_idx_positive = False
+
+    inferred_positive_samples = []
+    if max_streak_positive > 0:
+        for idx in range(0, max_streak_positive):
+            image_id, _ = sorted_images[idx]
+            if image_id not in user_negative_samples and \
+               image_id not in user_positive_samples:
+                   inferred_positive_samples.append(image_id)
+
+    prev_idx_negative = True
+    min_streak_negative = -1
+    for idx in spaced_idxs[::-1]:
+        if idx in negative_idxs and prev_idx_negative:
+            min_streak_negative = idx
+        else:
+            prev_idx_negative = False
+
+    inferred_negative_samples = []
+    if min_streak_negative > 0:
+        for idx in range(window_size, min_streak_negative, -1):
+            image_id, _ = sorted_images[idx]
+            if image_id not in user_negative_samples and \
+               image_id not in user_positive_samples:
+                   inferred_negative_samples.append(image_id)
+
+    # Remove user labels from inferred labels
+    for image_id in user_negative_samples:
+        if image_id in inferred_positive_samples:
+            inferred_positive_samples.remove(image_id)
+        if image_id in inferred_negative_samples:
+            inferred_negative_samples.remove(image_id)
+
+    for image_id in user_positive_samples:
+        if image_id in inferred_positive_samples:
+            inferred_positive_samples.remove(image_id)
+        if image_id in inferred_negative_samples:
+            inferred_negative_samples.remove(image_id)
+
+    print('user positives', user_positive_samples)
+    print('user negatives', user_negative_samples)
+    print('inferred positives', inferred_positive_samples)
+    print('inferred negatives', inferred_negative_samples)
+
+def visualize_similarity(sorted_images, image_similar_embeddings,
+                         sample_id_to_path, output_dir, max_images=100):
+    count = 0
+    for image_id, dist in tqdm(sorted_images[:min(max_images, len(sorted_images))]):
+        img = cv2.imread(sample_id_to_path[image_id])
+        similarity = image_similar_embeddings[image_id]['similarity']
+        similarity = (similarity - np.min(similarity))/(np.max(similarity) - np.min(similarity) + np.finfo(float).eps)
+        similarity = np.stack((similarity * 255,) * 3, axis=-1).astype(np.uint8)
+        similarity = cv2.resize(similarity[0], (img.shape[1], img.shape[0])).astype(np.uint8)
+        similarity_vis = np.concatenate((img, similarity), axis=1)
+        if output_dir is not None:
+            output_file_path = os.path.join(output_dir, 'similarity_vis_%03d'%(count) + '.png')
+            cv2.imwrite(output_file_path, similarity_vis)
+        count = count + 1
+        if count > max_images:
+            break
+
+def get_recall(sorted_images, gt_instances, cls, max_queries=100, step=5):
+    recalls = [ 0 for _ in range(0, max_queries, step) ]
+    count = 0
+    for im, dist in sorted_images[:max_queries]:
+        image_id = im.split('/')[-1].split('.')[0]
+        if image_id in gt_instances:
+            instances = gt_instances[image_id]
+            instances_cat = group_by_key(instances, 'category')
+            if cls in instances_cat:
+                recalls[int(count/step)] = recalls[int(count/step)] + 1
+        count = count + 1
+    return recalls
 
 def get_query_similarity(gpu_id, query_embeddings, image_id_queue,
                          model_name, embeddings_queue, num_cutoff=50):
@@ -81,10 +200,10 @@ def get_query_similarity(gpu_id, query_embeddings, image_id_queue,
         with tf.Session() as sess:
             init_fn(sess)
             while True:
-                im = image_id_queue.get()
-                if im == None:
+                image_id, im_path  = image_id_queue.get()
+                if image_id == None:
                     break
-                img = cv2.imread(im)
+                img = cv2.imread(im_path)
                 height, width = img.shape[:2]
                 max_image_size = 1920 * 1080
                 if height * width > max_image_size:
@@ -108,9 +227,9 @@ def get_query_similarity(gpu_id, query_embeddings, image_id_queue,
                               'similarity': similarity[cls_pos].copy() }
 
 
-                embeddings_queue.put((im, query_similar_embeddings))
+                embeddings_queue.put((image_id, query_similar_embeddings))
 
-def get_similarity(query_embeddings, sample_paths, model_name):
+def get_similarity(query_embeddings, sample_id_to_path, model_name):
 
     image_id_queue = mp.Queue()
     embeddings_queue = mp.Queue()
@@ -126,21 +245,21 @@ def get_similarity(query_embeddings, sample_paths, model_name):
         proc.start()
         processes.append(proc)
 
-    for im_path in sample_paths:
-        image_id_queue.put(im_path)
+    for im_id in sample_id_to_path.keys():
+        image_id_queue.put((im_id, sample_id_to_path[im_id]))
 
     cls_similar_embeddings = {}
     for cls_id in query_embeddings.keys():
         cls_similar_embeddings[cls_id] = {}
 
-    for _ in tqdm(sample_paths):
+    for _ in tqdm(sample_id_to_path.keys()):
         im, similar_embeddings = embeddings_queue.get()
         for cls_id in similar_embeddings.keys():
             cls_similar_embeddings[cls_id][im] = similar_embeddings[cls_id]
 
     # Tell processes to exit
     for gpu_id in range(num_gpus):
-        image_id_queue.put(None)
+        image_id_queue.put((None, None))
     for i in range(num_gpus):
         processes[i].join()
 
@@ -210,11 +329,19 @@ if __name__ == "__main__":
     sample_paths = glob.glob(os.path.join(sample_dir, '*.jpg'))
 
     sample_id_to_path = {}
-    for path in sample_paths:
+    for path in sample_paths[:5000]:
         sample_id_to_path[path.split('/')[-1].split('.')[0]] = path
 
     images_by_class = np.load('openimages_images_by_class.npy')[()]
     instances_by_class = np.load('openimages_instances_by_class.npy')[()]
+
+    instances_by_img = {}
+    for cls_id in instances_by_class.keys():
+        for ins in instances_by_class[cls_id]:
+            if ins['image_id'] not in instances_by_img:
+                instances_by_img[ins['image_id']] = [ins]
+            else:
+                instances_by_img[ins['image_id']].append(ins)
 
     query_vis_dir = '/n/pana/scratch/ravi/maskrcnn-benchmark/demo/open_images_queries'
     query_instances = {}
@@ -248,13 +375,34 @@ if __name__ == "__main__":
     proc.join()
 
     query_embeddings = return_dict['query_embeddings']
-    query_similar_embeddings = get_similarity(query_embeddings, sample_paths,
-                                              model_name)
+    num_active_iterations = 3
+    for it in range(num_active_iterations):
+        query_similar_embeddings = get_similarity(query_embeddings, sample_id_to_path,
+                                                  model_name)
 
-    output_dir = './open_images_similarity_vis_iter0'
-    for cls_id, name in classes_of_interest:
-        cls_output_dir = os.path.join(output_dir, name.replace(' ', '_'))
-        if not os.path.exists(cls_output_dir):
-            os.makedirs(cls_output_dir)
-        visualize_similarity(query_embeddings[cls_id], query_similar_embeddings[cls_id],
-                             cls_output_dir, max_images=100)
+        output_dir = './open_images_similarity_vis_iter' + str(it)
+        ranked_images = {}
+        initial_window = 30
+        num_samples = 10
+        for cls_id, name in classes_of_interest:
+            cls_output_dir = os.path.join(output_dir, name.replace(' ', '_'))
+            if not os.path.exists(cls_output_dir):
+                os.makedirs(cls_output_dir)
+
+            # Rank images
+            sorted_images = rank_by_query(query_embeddings[cls_id],
+                                          query_similar_embeddings[cls_id])
+            # visualize similar images
+            visualize_similarity(sorted_images,
+                                 query_similar_embeddings[cls_id],
+                                 sample_id_to_path, cls_output_dir,
+                                 max_images=100)
+            # Compute recalls
+            recalls = get_recall(sorted_images, instances_by_img, cls_id)
+            print(name, recalls)
+
+            # Get positives and negatives from user
+            get_postives_and_negatives(sorted_images, instances_by_img, cls_id,
+                                       num_samples, initial_window)
+            # Update embeddings
+        exit(0)
