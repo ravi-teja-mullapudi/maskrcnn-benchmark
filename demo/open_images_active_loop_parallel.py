@@ -24,6 +24,7 @@ sys.path.append(os.path.realpath('/n/pana/scratch/ravi/models/research/slim/'))
 
 from nets import resnet_v2
 from preprocessing import inception_preprocessing
+from shutil import copyfile
 
 def group_by_key(detections, key):
     groups = defaultdict(list)
@@ -110,10 +111,8 @@ def get_postives_and_negatives(sorted_images, gt_instances, cls,
         if image_id in inferred_negative_samples:
             inferred_negative_samples.remove(image_id)
 
-    print('user positives', user_positive_samples)
-    print('user negatives', user_negative_samples)
-    print('inferred positives', inferred_positive_samples)
-    print('inferred negatives', inferred_negative_samples)
+    return user_positive_samples, user_negative_samples, \
+           inferred_positive_samples, inferred_negative_samples
 
 def visualize_similarity(sorted_images, image_similar_embeddings,
                          sample_id_to_path, output_dir, max_images=100):
@@ -313,6 +312,7 @@ if __name__ == "__main__":
     for path in image_paths:
         image_id_to_path[path.split('/')[-1].split('.')[0]] = path
 
+    """
     classes_of_interest = [ ('/m/01bjv', 'Bus'),
                             ('/m/02pv19', 'Stop sign'),
                             ('/m/012n7d', 'Ambulance'),
@@ -324,15 +324,20 @@ if __name__ == "__main__":
                             ('/m/01lcw4', 'Limousine'),
                             ('/m/0pg52', 'Taxi')
                           ]
+    """
+    classes_of_interest = [('/m/01pns0', 'Fire hydrant')]
 
     sample_dir = '/n/pana/scratch/ravi/open_images_sub_sample'
     sample_paths = glob.glob(os.path.join(sample_dir, '*.jpg'))
 
     sample_id_to_path = {}
-    for path in sample_paths[:5000]:
+    for path in sample_paths:
         sample_id_to_path[path.split('/')[-1].split('.')[0]] = path
 
     images_by_class = np.load('openimages_images_by_class.npy')[()]
+    for cls_id in images_by_class.keys():
+        images_by_class[cls_id] = set(images_by_class[cls_id])
+
     instances_by_class = np.load('openimages_instances_by_class.npy')[()]
 
     instances_by_img = {}
@@ -375,22 +380,42 @@ if __name__ == "__main__":
     proc.join()
 
     query_embeddings = return_dict['query_embeddings']
+
+    query_support = {}
+    current_query = {}
+    search_window = {}
+    num_samples = 10
+    total_positives = {}
+
+    for cls_id, name in classes_of_interest:
+        query_support[cls_id] = { 'user_positives' : [],
+                                  'user_negatives' : [],
+                                  'inferred_positives' : [],
+                                  'inferred_negatives': [] }
+
+        current_query[cls_id] = query_embeddings[cls_id]
+        search_window[cls_id] = 30
+
+        total_positives[name] = 0
+        for im_id in sample_id_to_path.keys():
+            if im_id in images_by_class[cls_id]:
+                total_positives[name] = total_positives[name] + 1
+
     num_active_iterations = 3
     for it in range(num_active_iterations):
-        query_similar_embeddings = get_similarity(query_embeddings, sample_id_to_path,
+        query_similar_embeddings = get_similarity(current_query, sample_id_to_path,
                                                   model_name)
 
         output_dir = './open_images_similarity_vis_iter' + str(it)
         ranked_images = {}
-        initial_window = 30
-        num_samples = 10
+        window = search_window[cls_id]
         for cls_id, name in classes_of_interest:
             cls_output_dir = os.path.join(output_dir, name.replace(' ', '_'))
             if not os.path.exists(cls_output_dir):
                 os.makedirs(cls_output_dir)
 
             # Rank images
-            sorted_images = rank_by_query(query_embeddings[cls_id],
+            sorted_images = rank_by_query(current_query[cls_id],
                                           query_similar_embeddings[cls_id])
             # visualize similar images
             visualize_similarity(sorted_images,
@@ -399,10 +424,57 @@ if __name__ == "__main__":
                                  max_images=100)
             # Compute recalls
             recalls = get_recall(sorted_images, instances_by_img, cls_id)
-            print(name, recalls)
+            print(it, name, np.cumsum(recalls))
 
             # Get positives and negatives from user
-            get_postives_and_negatives(sorted_images, instances_by_img, cls_id,
-                                       num_samples, initial_window)
+            user_positive, user_negative, inferred_positive, inferred_negative = \
+                    get_postives_and_negatives(sorted_images, instances_by_img, cls_id,
+                                               num_samples, window)
+
+            for im_id in user_positive:
+                if im_id not in query_support[cls_id]['user_positives']:
+                    query_support[cls_id]['user_positives'].append(im_id)
+
+            for im_id in user_negative:
+                if im_id not in query_support[cls_id]['user_negatives']:
+                    query_support[cls_id]['user_negatives'].append(im_id)
+
+            # Should we accumulate the the inffered images across rounds? probably not
+
+            query_support[cls_id]['inferred_positives'] = inferred_positive
+            query_support[cls_id]['inferred_negatives'] = inferred_negative
+
             # Update embeddings
-        exit(0)
+            pos_embeddings = []
+            neg_embeddings = []
+            for count, im_id in enumerate(query_support[cls_id]['user_positives']):
+                embeddings = query_similar_embeddings[cls_id][im_id]['embeddings']
+                pos_embeddings.append(np.mean(embeddings, axis=0))
+                user_feedback_dir = os.path.join(query_vis_dir, name.replace(' ', '_'))
+                if not os.path.exists(user_feedback_dir):
+                    os.makedirs(user_feedback_dir)
+                save_path = os.path.join(user_feedback_dir,
+                                         'iter_' + str(it) + '_pos_' + str(count) + im_id + '.png')
+                copyfile(image_id_to_path[im_id], save_path)
+
+            for count, im_id in enumerate(query_support[cls_id]['user_negatives']):
+                embeddings = query_similar_embeddings[cls_id][im_id]['embeddings']
+                neg_embeddings.append(np.mean(embeddings, axis=0))
+                user_feedback_dir = os.path.join(query_vis_dir, name.replace(' ', '_'))
+                if not os.path.exists(user_feedback_dir):
+                    os.makedirs(user_feedback_dir)
+                save_path = os.path.join(user_feedback_dir,
+                                         'iter_' + str(it) + '_neg_' + str(count) + im_id + '.png')
+                copyfile(image_id_to_path[im_id], save_path)
+
+            print(len(query_support[cls_id]['user_positives']),
+                  len(query_support[cls_id]['user_negatives']))
+
+            base_query = query_embeddings[cls_id]
+            base_query = base_query / (np.linalg.norm(base_query, ord=2) + np.finfo(float).eps)
+
+            refined_query = sum(pos_embeddings + [base_query])/(len(pos_embeddings) + 1)
+            if len(neg_embeddings) > 0:
+                refined_query = refined_query - (sum(neg_embeddings)/len(neg_embeddings))
+
+            current_query[cls_id] = refined_query
