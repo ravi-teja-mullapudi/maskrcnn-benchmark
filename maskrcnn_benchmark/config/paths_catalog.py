@@ -136,6 +136,15 @@ class DatasetCatalog(object):
             "img_dir": "bdd/train",
             "ann_file": "bdd/annotations/bdd_train_100_per_class.json"
         },
+        "open_images_train_1k_bowl": {
+            "img_dir": "open_images",
+            "ann_file": "open_images/annotations/open_images_Bowl_1000.json"
+        },
+        "open_images_train_1k_person": {
+            "img_dir": "open_images",
+            "ann_file": "open_images/annotations/open_images_Person_1000.json"
+        }
+
     }
 
     @staticmethod
@@ -171,6 +180,17 @@ class DatasetCatalog(object):
             )
             return dict(
                 factory="BDDDataset",
+                args=args,
+            )
+        elif "open_images" in name:
+            data_dir = DatasetCatalog.DATA_DIR
+            attrs = DatasetCatalog.DATASETS[name]
+            args = dict(
+                img_dir=os.path.join(data_dir, attrs["img_dir"]),
+                ann_file=os.path.join(data_dir, attrs["ann_file"]),
+            )
+            return dict(
+                factory="OpenImagesDataset",
                 args=args,
             )
         raise RuntimeError("Dataset not available: {}".format(name))
