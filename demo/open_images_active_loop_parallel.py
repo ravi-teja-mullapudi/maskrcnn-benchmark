@@ -26,6 +26,14 @@ from nets import resnet_v2
 from preprocessing import inception_preprocessing
 from shutil import copyfile
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+from random import shuffle
+
 def group_by_key(detections, key):
     groups = defaultdict(list)
     for d in detections:
@@ -291,10 +299,10 @@ def get_embeddings(instances, model_name, return_dict):
 
         with tf.Session() as sess:
             init_fn(sess)
-            for cls_id in instances.keys():
-                ins, patch = instances[cls_id]
+            for ins_id in instances.keys():
+                ins, patch = instances[ins_id]
                 scaled_img, logit_vals, embedding = sess.run([processed_image, logits, pool5], feed_dict={image: patch})
-                query_embeddings[cls_id] = embedding[0, 0, 0, :]
+                query_embeddings[ins_id] = embedding[0, 0, 0, :]
     return_dict['query_embeddings'] = query_embeddings
 
 if __name__ == "__main__":
@@ -325,7 +333,11 @@ if __name__ == "__main__":
                             ('/m/0pg52', 'Taxi')
                           ]
     """
-    classes_of_interest = [('/m/01pns0', 'Fire hydrant')]
+    classes_of_interest = [('/m/01pns0', 'Fire hydrant'),
+                           ('/m/012n7d', 'Ambulance'),
+                           ('/m/015qbp', 'Parking meter'),
+                           ('/m/0pg52', 'Taxi')
+                           ]
 
     sample_dir = '/n/pana/scratch/ravi/open_images_sub_sample'
     sample_paths = glob.glob(os.path.join(sample_dir, '*.jpg'))
@@ -337,6 +349,15 @@ if __name__ == "__main__":
     images_by_class = np.load('openimages_images_by_class.npy')[()]
     for cls_id in images_by_class.keys():
         images_by_class[cls_id] = set(images_by_class[cls_id])
+
+    cls_counts = {}
+    search_set = set(sample_id_to_path.keys())
+
+    for cls_id in images_by_class.keys():
+        cls_counts[cls_id] = 0
+        for im_id in images_by_class[cls_id]:
+            if im_id in search_set:
+                cls_counts[cls_id] = cls_counts[cls_id] + 1
 
     instances_by_class = np.load('openimages_instances_by_class.npy')[()]
 
@@ -350,9 +371,26 @@ if __name__ == "__main__":
 
     query_vis_dir = '/n/pana/scratch/ravi/maskrcnn-benchmark/demo/open_images_queries'
     query_instances = {}
-    # pick an instance from each of the classes of interest
+
     for cls_id, name in classes_of_interest:
+        for im_id in images_by_class[cls_id]:
+            if im_id in search_set:
+                cls_name = name.replace(' ', '_')
+                dest_dir = os.path.join(query_vis_dir, cls_name + '_gt')
+                dest_path = os.path.join(dest_dir, im_id + '.png')
+                if not os.path.exists(dest_dir):
+                    os.makedirs(dest_dir)
+                copyfile(image_id_to_path[im_id], dest_path)
+
+    # pick few instances from each of the classes of interest
+    for cls_id, name in classes_of_interest:
+        num_query_examples = 5
+        curr_query_examples = 0
+        sourced_images = []
         for ins in instances_by_class[cls_id]:
+            if ins['image_id'] in sourced_images:
+                continue
+            sourced_images.append(ins['image_id'])
             img = cv2.imread(image_id_to_path[ins['image_id']])
             h = img.shape[0]
             w = img.shape[1]
@@ -362,13 +400,14 @@ if __name__ == "__main__":
             y2 = int(float(ins['bbox'][3]) * h)
             if ((y2-y1) * (x2-x1) > 128 * 128):
                 patch = img[y1:y2, x1:x2, :]
+                cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
                 cls_name = name.replace(' ', '_')
-                patch_path = os.path.join(query_vis_dir, cls_name + '_patch.png')
-                cv2.imwrite(patch_path, patch)
-                patch_source_path = os.path.join(query_vis_dir, cls_name + '_patch_source.png')
-                cv2.imwrite(patch_source_path, img)
-                query_instances[cls_id] = (ins, patch)
-                break
+                patch_path = os.path.join(query_vis_dir, cls_name + '_patch_' + str(curr_query_examples) + '.png')
+                cv2.imwrite(patch_path, img)
+                query_instances[(cls_id, curr_query_examples)] = (ins, patch)
+                curr_query_examples = curr_query_examples + 1
+                if curr_query_examples >= num_query_examples:
+                    break
 
     model_name = 'resnet_v2_50'
     manager = mp.Manager()
@@ -380,6 +419,40 @@ if __name__ == "__main__":
     proc.join()
 
     query_embeddings = return_dict['query_embeddings']
+    avg_query_embeddings = {}
+    for cls_id, name in classes_of_interest:
+        sum_embedding = None
+        for i in range(num_query_examples):
+            embedding = query_embeddings[(cls_id, i)]
+            if sum_embedding is None:
+                sum_embedding = embedding
+            else:
+                sum_embedding = sum_embedding + embedding
+        avg_embedding = sum_embedding/num_query_examples
+        avg_query_embeddings[cls_id] = avg_embedding
+
+    """
+    for cls_id, name in classes_of_interest:
+        sum_embedding = None
+        for i in range(num_query_examples):
+            embedding = query_embeddings[(cls_id, i)]
+            embedding = embedding / (np.linalg.norm(embedding, ord=2) + np.finfo(float).eps)
+            if sum_embedding is None:
+                sum_embedding = embedding
+            else:
+                sum_embedding = sum_embedding + embedding
+
+        sum_embedding = sum_embedding/num_query_examples
+        df = pd.DataFrame()
+        df['x'] = [ e for e in range(sum_embedding.shape[0])]
+        df['y'] = sum_embedding
+        plt.figure(figsize=(15,3))
+        g = sns.barplot('x', 'y', data=df)
+        g.set(xticklabels=[])
+        plt.savefig('test_plot.png')
+        break
+    """
+    query_embeddings = avg_query_embeddings
 
     query_support = {}
     current_query = {}
@@ -417,14 +490,19 @@ if __name__ == "__main__":
             # Rank images
             sorted_images = rank_by_query(current_query[cls_id],
                                           query_similar_embeddings[cls_id])
+
+            #shuffle(sorted_images)
+
             # visualize similar images
             visualize_similarity(sorted_images,
                                  query_similar_embeddings[cls_id],
                                  sample_id_to_path, cls_output_dir,
                                  max_images=100)
             # Compute recalls
-            recalls = get_recall(sorted_images, instances_by_img, cls_id)
-            print(it, name, np.cumsum(recalls))
+            max_queries = 200
+            recalls = get_recall(sorted_images, instances_by_img, cls_id, max_queries=max_queries)
+            total_recall = float(np.cumsum(recalls)[-1])/cls_counts[cls_id]
+            print(name, it, total_recall)
 
             # Get positives and negatives from user
             user_positive, user_negative, inferred_positive, inferred_negative = \
@@ -473,8 +551,8 @@ if __name__ == "__main__":
             base_query = query_embeddings[cls_id]
             base_query = base_query / (np.linalg.norm(base_query, ord=2) + np.finfo(float).eps)
 
-            refined_query = sum(pos_embeddings + [base_query])/(len(pos_embeddings) + 1)
-            if len(neg_embeddings) > 0:
-                refined_query = refined_query - (sum(neg_embeddings)/len(neg_embeddings))
+            pos_average = sum(pos_embeddings)/(len(pos_embeddings) + np.finfo(float).eps)
+            neg_average = sum(neg_embeddings)/(len(neg_embeddings) + np.finfo(float).eps)
+            refined_query = base_query + (pos_average - neg_average)
 
             current_query[cls_id] = refined_query
