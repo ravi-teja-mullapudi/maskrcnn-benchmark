@@ -22,6 +22,8 @@ def get_instances_per_class(class_name_file, bbox_file):
         for row in reader:
             if row[0] == 'ImageID':
                 continue
+            if int(row[10]) > 0 or int(row[11]) > 0 or int(row[12]) > 0:
+                continue
             instance = { 'category': row[2],
                          'bbox': [row[4], row[5], row[6], row[7]],
                          'image_id': row[0]
@@ -48,7 +50,7 @@ if __name__ ==  "__main__":
         image_id_to_path[path.split('/')[-1].split('.')[0]] = path
 
     class_name_file = os.path.join(image_dir, 'labels', 'class-descriptions-boxable.csv')
-    bbox_file = os.path.join(image_dir, 'labels', 'train-annotations-bbox.csv')
+    bbox_file = os.path.join(image_dir, 'labels', 'validation-annotations-bbox.csv')
 
     instances_class_id, class_id_to_name = get_instances_per_class(class_name_file, bbox_file)
     images_class_id = {}
@@ -60,7 +62,7 @@ if __name__ ==  "__main__":
             else:
                 images_class_id[cls] = set([ins['image_id']])
 
-    rnd_paths = np.random.choice(image_paths, 9000, replace=False)
+    rnd_paths = np.random.choice(image_paths, 49000, replace=False)
     rnd_image_ids = set()
     for path in rnd_paths:
         rnd_image_ids.add(path.split('/')[-1].split('.')[0])
