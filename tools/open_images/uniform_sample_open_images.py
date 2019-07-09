@@ -57,24 +57,36 @@ if __name__ ==  "__main__":
             else:
                 instances_class_id[row[2]].append(instance)
 
-    num_positives = 10000
+    num_positives = 1000
 
-    for class_id in instances_class_id.keys():
+    classes_of_interest = { 'Fire hydrant':  '/m/01pns0',
+                            'Limousine': '/m/01lcw4',
+                            'Billboard': '/m/01knjb',
+                            'Person': '/m/01g317',
+                            'Motorcycle': '/m/04_sv',
+                            'Parking meter': '/m/015qbp',
+                            'Ambulance': '/m/012n7d',
+                            'Bicycle': '/m/0199g',
+                            'Bus': '/m/01bjv',
+                            'Convenience store': '/m/0crjs',
+                          }
+
+    positive_instances = []
+    image_ids = set()
+    for _, class_id in classes_of_interest.iteritems():
         ins_by_img = group_by_key(instances_class_id[class_id], 'name')
 
-        image_ids = np.random.choice(list(ins_by_img.keys()),
+        class_image_ids = np.random.choice(list(ins_by_img.keys()),
                                      min(num_positives, len(ins_by_img.keys())), replace=False)
-        classes = [ class_id_to_name[class_id] ]
-
-        positive_instances = []
-        for img_id in image_ids:
+        for img_id in class_image_ids:
             positive_instances = positive_instances + ins_by_img[img_id]
+            if img_id not in image_ids:
+                image_ids.add(img_id)
 
-        open_images_annotations = { 'image_ids' : image_ids.tolist(),
-                                    'classes': classes,
-                                    'annotations': positive_instances }
+    open_images_annotations = { 'image_ids' : list(image_ids),
+                                'classes': classes_of_interest.keys(),
+                                'annotations': positive_instances }
 
-        cls_name = classes[0].replace(' ', '_')
-        out_name = 'open_images_' + cls_name + '_' + str(min(num_positives, len(ins_by_img.keys()))) + '.json'
-        with open(out_name, 'w') as fp:
-            json.dump(open_images_annotations, fp)
+    out_name = 'open_images_10_class' + '_' + str(num_positives) + '.json'
+    with open(out_name, 'w') as fp:
+        json.dump(open_images_annotations, fp)
