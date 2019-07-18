@@ -15,6 +15,8 @@ import random
 import math
 import multiprocessing as mp
 import subprocess
+import argparse
+import csv
 
 from tqdm import tqdm
 from collections import defaultdict
@@ -139,8 +141,8 @@ def visualize_similarity(sorted_images, image_similar_embeddings,
         if count > max_images:
             break
 
-def get_recall(sorted_images, gt_instances, cls, max_queries=100, step=5):
-    recalls = [ 0 for _ in range(0, max_queries, step) ]
+def get_gt_positives(sorted_images, gt_instances, cls, max_queries=100, step=1):
+    gt_positives = [ 0 for _ in range(0, max_queries, step) ]
     count = 0
     for im, dist in sorted_images[:max_queries]:
         image_id = im.split('/')[-1].split('.')[0]
@@ -148,9 +150,9 @@ def get_recall(sorted_images, gt_instances, cls, max_queries=100, step=5):
             instances = gt_instances[image_id]
             instances_cat = group_by_key(instances, 'category')
             if cls in instances_cat:
-                recalls[int(count/step)] = recalls[int(count/step)] + 1
+                gt_positives[int(count/step)] = gt_positives[int(count/step)] + 1
         count = count + 1
-    return recalls
+    return gt_positives
 
 def get_query_similarity(gpu_id, query_embeddings, image_id_queue,
                          model_name, embeddings_queue, num_cutoff=50):
@@ -307,6 +309,15 @@ def get_embeddings(instances, model_name, return_dict):
 
 if __name__ == "__main__":
     np.random.seed(0)
+    parser = argparse.ArgumentParser(description="Open Images Evaluation")
+    parser.add_argument(
+        "--eval-category",
+        default="Person",
+        metavar="FILE",
+        help="Test category",
+    )
+
+    args = parser.parse_args()
 
     image_dir = '/n/pana/scratch/ravi/open_images'
     sub_dirs = [ 'train_' + i for i in \
@@ -320,6 +331,19 @@ if __name__ == "__main__":
     for path in image_paths:
         image_id_to_path[path.split('/')[-1].split('.')[0]] = path
 
+    class_name_file = os.path.join(image_dir, 'labels', 'class-descriptions-boxable.csv')
+
+    class_name_to_id = {}
+    with open(class_name_file) as class_names:
+        reader = csv.reader(class_names, delimiter=',')
+        for row in reader:
+            class_name_to_id[row[1]] = row[0]
+
+    assert(args.eval_category in class_name_to_id)
+    class_id = class_name_to_id[args.eval_category]
+
+    classes_of_interest = [ (class_id, args.eval_category)]
+    print(classes_of_interest)
     """
     classes_of_interest = [ ('/m/01bjv', 'Bus'),
                             ('/m/02pv19', 'Stop sign'),
@@ -333,13 +357,15 @@ if __name__ == "__main__":
                             ('/m/0pg52', 'Taxi')
                           ]
     """
-    classes_of_interest = [('/m/01pns0', 'Fire hydrant'),
-                           ('/m/012n7d', 'Ambulance'),
-                           ('/m/015qbp', 'Parking meter'),
-                           ('/m/0pg52', 'Taxi')
-                           ]
-
-    sample_dir = '/n/pana/scratch/ravi/open_images_sub_sample'
+    """
+    classes_of_interest = [ #('/m/01knjb', 'Billboard'),
+                            #('/m/012n7d', 'Ambulance'),
+                            #('/m/01g317', 'Person'),
+                            #('/m/01lcw4', 'Limousine'),
+                            ('/m/0199g', 'Bicycle')
+                          ]
+    """
+    sample_dir = '/n/pana/scratch/ravi/open_images_sub_sample_all_long_tail/'
     sample_paths = glob.glob(os.path.join(sample_dir, '*.jpg'))
 
     sample_id_to_path = {}
@@ -475,6 +501,7 @@ if __name__ == "__main__":
                 total_positives[name] = total_positives[name] + 1
 
     num_active_iterations = 3
+
     for it in range(num_active_iterations):
         query_similar_embeddings = get_similarity(current_query, sample_id_to_path,
                                                   model_name)
@@ -499,10 +526,16 @@ if __name__ == "__main__":
                                  sample_id_to_path, cls_output_dir,
                                  max_images=100)
             # Compute recalls
-            max_queries = 200
-            recalls = get_recall(sorted_images, instances_by_img, cls_id, max_queries=max_queries)
-            total_recall = float(np.cumsum(recalls)[-1])/cls_counts[cls_id]
-            print(name, it, total_recall)
+            max_queries = max(1000, cls_counts[cls_id])
+            gt_positives = get_gt_positives(sorted_images, instances_by_img,
+                                            cls_id, max_queries=max_queries)
+            intervals = [25, 50, 100, 500, 1000]
+            recalls = []
+            precisions = []
+            for i in intervals:
+                recalls.append(float(np.cumsum(gt_positives)[i-1])/cls_counts[cls_id])
+                precisions.append(float(np.cumsum(gt_positives)[i-1])/i)
+            print(name, it, recalls, precisions)
 
             # Get positives and negatives from user
             user_positive, user_negative, inferred_positive, inferred_negative = \
@@ -556,3 +589,7 @@ if __name__ == "__main__":
             refined_query = base_query + (pos_average - neg_average)
 
             current_query[cls_id] = refined_query
+
+        if not os.path.exists(output_dir):
+            os.makedirs(cls_output_dir)
+        np.save(os.path.join(output_dir, 'query_embeddings.npy'), current_query)
