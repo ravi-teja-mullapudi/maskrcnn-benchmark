@@ -8,7 +8,6 @@ import glob
 import json
 
 import numpy as np
-import tensorflow as tf
 import time
 import cv2
 import random
@@ -44,7 +43,7 @@ def make_image_level_supervision_widget(images):
             height=height,
         )
         label_widget = widgets.ToggleButtons(
-            options=['Yes', 'No'],
+            options=['Yes', 'No', 'Unsure'],
             description='Positive example?',
             button_style='',
         )
@@ -54,3 +53,27 @@ def make_image_level_supervision_widget(images):
         vboxes.append(vbox)
 
     return widgets.VBox(vboxes), label_widgets
+
+def update_query_with_user_feedback(user_positives,
+                                    user_negatives,
+                                    user_neutrals,
+                                    query_similar_embeddings,
+                                    current_query):
+    current_query = current_query / (np.linalg.norm(current_query, ord=2) + np.finfo(float).eps)
+    pos_embeddings = []
+    neg_embeddings = []
+    neutral_embeddings = []
+    for im_id in user_positives:
+        embeddings = query_similar_embeddings[im_id]
+        pos_embeddings.append(np.mean(embeddings, axis=0))
+    for im_id in user_negatives:
+        embeddings = query_similar_embeddings[im_id]
+        neg_embeddings.append(np.mean(embeddings, axis=0))
+    for im_id in neutral_embeddings:
+        embeddings = query_similar_embeddings[im_id]
+        neutral_embeddings.append(np.mean(embeddings, axis=0))
+
+    pos_average = sum(pos_embeddings)/(len(pos_embeddings) + np.finfo(float).eps)
+    neg_average = sum(neg_embeddings)/(len(neg_embeddings) + np.finfo(float).eps)
+    refined_query = current_query + (pos_average - neg_average)
+    return refined_query
