@@ -27,7 +27,6 @@ from preprocessing import inception_preprocessing
 
 from tqdm import tqdm
 from shutil import copy, copyfile
-from active_loop_components import active_loop_iteration
 
 def get_class_name_to_id(dataset_dir):
     class_name_file = os.path.join(dataset_dir, 'labels',
@@ -72,7 +71,7 @@ def get_search_imageset(search_image_dir):
     sample_paths = glob.glob(os.path.join(sample_dir, '*.jpg'))
 
     sample_id_to_path = {}
-    for path in sample_paths[:1000]:
+    for path in sample_paths:
         sample_id_to_path[path.split('/')[-1].split('.')[0]] = path
 
     return sample_id_to_path
