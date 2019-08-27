@@ -67,6 +67,14 @@ def preprocess_open_images_dataset(dataset_dir,
 
     return image_id_to_path, images_by_class, instances_by_img
 
+def get_precision(image_list, images_by_class, cls_id):
+    total = len(image_list)
+    count = 0
+    for im_id in image_list:
+        if im_id in images_by_class[cls_id]:
+            count = count + 1
+    return float(count)/total
+
 def get_search_imageset(search_image_dir):
     sample_paths = glob.glob(os.path.join(sample_dir, '*.jpg'))
 
@@ -450,5 +458,45 @@ if __name__ == "__main__":
         feedback_state_path = os.path.join(dest_dir, iteration_prefix + '_feedback_state.npy')
 
         np.save(feedback_state_path, feedback_state)
+    elif args.command == 'compute_precision':
+        list_images_by_class = np.load('openimages_images_by_class.npy')[()]
+        list_instances_by_class = np.load('openimages_instances_by_class.npy')[()]
+        image_id_to_path, images_by_class, instances_by_img = \
+                                preprocess_open_images_dataset(dataset_dir,
+                                                               list_images_by_class,
+                                                               list_instances_by_class)
+        iteration = int(args.iteration)
+        iteration_prefix = 'iteration_' + str(iteration)
+        iteration_feed_back_state_file_name = iteration_prefix + '_feedback_state.npy'
+        iteration_feed_back_state_path = os.path.join(dest_dir, iteration_feed_back_state_file_name)
+        assert(os.path.exists(iteration_feed_back_state_path))
+
+        # Read iteration state
+        iteration_feed_back_state = np.load(iteration_feed_back_state_path)[()]
+        ranked_images = iteration_feed_back_state['ranked_images']
+        cutoff = 100
+        ranked_img_list = [ im_id for im_id, _ in ranked_images[:cutoff] ]
+        precision = get_precision(ranked_img_list, images_by_class, class_id)
+        print(precision)
+    elif args.command == 'move_ranked_images':
+        iteration = int(args.iteration)
+        iteration_prefix = 'iteration_' + str(iteration)
+        iteration_feed_back_state_file_name = iteration_prefix + '_feedback_state.npy'
+        iteration_feed_back_state_path = os.path.join(dest_dir, iteration_feed_back_state_file_name)
+        assert(os.path.exists(iteration_feed_back_state_path))
+
+        sample_dir = '/n/pana/scratch/ravi/open_images_sub_sample_all_long_tail/'
+        search_paths = get_search_imageset(sample_dir)
+
+        # Read iteration state
+        iteration_feed_back_state = np.load(iteration_feed_back_state_path)[()]
+        ranked_images = iteration_feed_back_state['ranked_images']
+
+        ranked_images_dir = os.path.join(dest_dir, iteration_prefix + '_ranked_images')
+        cutoff = 100
+        if not os.path.exists(ranked_images_dir):
+            os.makedirs(ranked_images_dir)
+        for img_id, _ in ranked_images[:cutoff]:
+            copy(search_paths[img_id], ranked_images_dir)
     else:
         print('Unknown command')

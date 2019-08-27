@@ -9,6 +9,17 @@ from sample_open_images import get_instances_per_class
 import cv2
 import argparse
 
+def draw_boxes(img, labels):
+    img = img.copy()
+    for l in labels:
+        bbox = np.array(l['bbox']).astype(int)
+        top_left, bottom_right = bbox[:2].tolist(), bbox[2:].tolist()
+        img = cv2.rectangle(img, tuple(top_left), tuple(bottom_right),
+                            (0, 255, 0), 3)
+        cv2.putText(img, l['category'], tuple(top_left), cv2.FONT_HERSHEY_SIMPLEX,
+                    .5, (255, 0, 0), 2)
+    return img
+
 def group_by_key(detections, key):
     groups = defaultdict(list)
     for d in detections:
@@ -35,6 +46,12 @@ if __name__ == "__main__":
         metavar="FILE",
         help="Test category",
     )
+    parser.add_argument(
+        "--output-dir",
+        default="./",
+        help="Output directory for visualiation images",
+    )
+
 
     args = parser.parse_args()
 
@@ -121,10 +138,62 @@ if __name__ == "__main__":
             else:
                 tn = tn + 1
                 score_per_img[img_id] = (max_score, 'tn')
+
     print(tp, fp, fn, tn)
-    top_25 = sorted(score_per_img.values(), key=lambda i: -i[0])[:25]
-    tp_top_25 = sum([ t[1] == 'tp' for t in top_25 ])
+    score_sorted = sorted(score_per_img.items(), key=lambda i: -i[1][0])
+
+    print(instances_class_id[class_id])
+
+    cls_instances_per_img = group_by_key(instances_class_id[class_id], 'image_id')
+    gt_instances_cls = {}
+
+    for img_id in tqdm(cls_instances_per_img.keys()):
+        for ins in cls_instances_per_img[img_id]:
+            img_path = image_id_to_path[ins['image_id']]
+            img = Image.open(img_path).convert('RGB')
+            width, height = img.size
+
+            scaled_box = [  float(ins['bbox'][0]) * width,
+                            float(ins['bbox'][2]) * height,
+                            float(ins['bbox'][1]) * width,
+                            float(ins['bbox'][3]) * height
+                        ]
+
+            cls = ins['category']
+            gt_instance = { 'category' : class_id_to_name[cls],
+                            'bbox' : scaled_box,
+                            'name' : ins['image_id']
+                          }
+
+            if cls not in gt_instances_cls:
+                gt_instances_cls[cls] = [gt_instance]
+            else:
+                gt_instances_cls[cls].append(gt_instance)
+
+    gt_per_img = group_by_key(gt_instances_cls[class_id], 'name')
+
+    count = 0
+    for im_id, s in score_sorted:
+        i = image_id_to_path[im_id]
+        img = cv2.imread(i)
+        if s[1] != 'fp':
+            continue
+        if im_id in pred_per_img:
+            pred_img = draw_boxes(img, pred_per_img[im_id])
+        else:
+            pred_img = img
+        if im_id in gt_per_img:
+            gt_img = draw_boxes(img, gt_per_img[im_id])
+        else:
+            gt_img = img
+        vis_img = np.concatenate((pred_img, gt_img), axis=1)
+        out_path = os.path.join(args.output_dir, 'false_pos_' + str(count) + '.png')
+        cv2.imwrite(out_path, vis_img)
+        if count > 100:
+            break
+        count = count + 1
+
+    tp_top_25 = sum([ t[1][1] == 'tp' for t in score_sorted[:25] ])
     print('tp_top_25', tp_top_25)
-    top_100 = sorted(score_per_img.values(), key=lambda i: -i[0])[:100]
-    tp_top_100 = sum([ t[1] == 'tp' for t in top_100 ])
+    tp_top_100 = sum([ t[1][1] == 'tp' for t in score_sorted[:100] ])
     print('tp_top_100', tp_top_100)
